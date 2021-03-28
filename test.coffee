@@ -16,7 +16,7 @@ bad_sign= Buffer.alloc 64
 {
   privateKey: prv_key
   publicKey : pub_key
-} = keypair = ed25519.MakeKeypair seed
+} = ed25519.MakeKeypair seed
 
 prv_key2 = Buffer.alloc 64
 pub_key2 = Buffer.alloc 32
@@ -26,7 +26,7 @@ if !pub_key.equals pub_key2
   throw new Error "!pub_key.equals pub_key2"
 
 
-sign = ed25519.Sign message, keypair
+sign = ed25519.Sign message, prv_key
 
 sign2 = Buffer.alloc 64
 mod.sign_pk_sync message, prv_key2, sign2
@@ -50,6 +50,12 @@ if mod.verify_sync message, bad_sign, pub_key
 #    correctness async
 # ###################################################################################################
 
+sign3 = Buffer.alloc 64
+await mod.sign_pk message, prv_key, sign3, defer(err)
+if !sign.equals sign3
+  throw new Error "!sign.equals sign3"
+
+
 await mod.verify message, sign, pub_key, defer(err, res)
 if !res
   throw new Error "!verify of correct signature"
@@ -59,7 +65,88 @@ if res
   throw new Error "verify of incorrect signature"
 
 # ###################################################################################################
+#    bench sign
+# ###################################################################################################
+console.log "bench sign"
+sign_base = (message, prv_key, cb)->
+  cb null, ed25519.Sign message, prv_key
 
+sign_mod = (message, prv_key, cb)->
+  res = Buffer.alloc 64
+  await mod.sign_pk message, prv_key, res, defer(err); return cb err if err
+  cb null, res
+
+# ###################################################################################################
+arg_list = []
+res_list = []
+for i in [0 ... batch_size]
+  arg_list.push buf = Buffer.from message
+  buf.writeUInt32BE i, 0
+  res_list.push buf = Buffer.alloc 64
+
+
+bench_seq = (name, fn, cb)->
+  start_ts = Date.now()
+  
+  i = 0
+  loop
+    message.writeUInt32BE i, 0
+    await fn message, prv_key, defer(err); return cb err if err
+    
+    if i % 100 == 0
+      elp_ts = Date.now() - start_ts
+      break if elp_ts > duration
+    i++
+  
+  hashrate = i/(elp_ts/100)
+  console.log "seq #{name} #{hashrate.toFixed(2)}"
+  cb()
+
+bench_par = (name, fn, cb)->
+  start_ts = Date.now()
+  
+  hash_count = 0
+  loop
+    await
+      for i in [0 ... batch_size]
+        arg = arg_list[i]
+        fn arg, prv_key, defer()
+    
+    hash_count += batch_size
+    elp_ts = Date.now() - start_ts
+    break if elp_ts > duration
+  
+  hashrate = hash_count/(elp_ts/100)
+  console.log "par #{name} #{hashrate.toFixed(2)}"
+  cb()
+
+await bench_seq "base", sign_base, defer(err); return cb err if err
+await bench_par "mod ", sign_mod , defer(err); return cb err if err
+
+# ###################################################################################################
+#    special no_alloc
+# ###################################################################################################
+start_ts = Date.now()
+
+hash_count = 0
+loop
+  await
+    for i in [0 ... batch_size]
+      arg = arg_list[i]
+      res = res_list[i]
+      mod.sign_pk arg, prv_key, res, defer()
+  
+  hash_count += batch_size
+  elp_ts = Date.now() - start_ts
+  break if elp_ts > duration
+
+hashrate = hash_count/(elp_ts/100)
+console.log "no_alloc #{hashrate.toFixed(2)}"
+
+# ###################################################################################################
+#    bench verify
+# ###################################################################################################
+console.log "bench verify"
 verify_base = (message, sign, pub_key, cb)->
   cb null, ed25519.Verify message, sign, pub_key
 
